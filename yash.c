@@ -10,8 +10,17 @@
 #include <sys/wait.h>
 #include "parse.h"
 #include "command.h"
+#include <signal.h>
 
 #define CMDFAIL continue
+
+void doNothing(int sig){
+    printf("Do nothing after receiving signal %d\n",sig);
+}
+
+void doSomething(int sig){
+    printf("Do something after receiving signal %d\n",sig);
+}
 
 int fileRedirect(command* cmd){
     if(cmd->inputFile!=NULL){
@@ -43,9 +52,25 @@ int main(){
     char* buffer=NULL;
     char* tokenList[2010];
     int tokenCnt=0;
+    //yash should ignore sigtstp
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGINT, SIG_IGN);
+    // The signal disposition is a per-process attribute: in a
+    // multithreaded application, the disposition of a particular signal
+    // is the same for all threads.
+
+    // A child created via fork(2) inherits a copy of its parent's
+    // signal dispositions.  During an execve(2), the dispositions of
+    // handled signals are reset to the default; the dispositions of
+    // ignored signals are left unchanged.
+
+    // signal(SIGCHLD, doNothing);
     while(1){
         buffer=readline("# ");
         char* nextToken=strtok(buffer," ");
+        if(nextToken==NULL){
+            continue;
+        }
         do{
             tokenList[tokenCnt++]=nextToken;
         } while (nextToken=strtok(NULL," "));
@@ -68,12 +93,23 @@ int main(){
                 if(fileRedirect(cmd)==-1){
                     CMDFAIL;
                 }
+                signal(SIGTSTP, SIG_DFL);
+                signal(SIGINT, SIG_DFL);
+                // setpgid(0,0); //stop signal is sent to everyone in a process group
+                // signal(SIGTSTP, doSomething);
+                // while(1){
+                //     printf("Oh yeah!\n");
+                //     sleep(1);
+                // }
                 int ret=execvp(cmd->cmd,cmd->arg);
                 if(ret==-1){
                     CMDFAIL;
                 }
             }
-            wait(NULL);//TODO should wait for signal
+            waitpid(cpid,NULL,WUNTRACED);//should wait for signal
+
+            // kill(cpid,SIGCONT);
+            // printf("child continues");
             deleteCmd(cmd);
         }
         else{
