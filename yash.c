@@ -29,6 +29,13 @@ int fileRedirect(command* cmd){
         }
         dup2(fd,1);
     }
+    if(cmd->errorOutputFile!=NULL){
+        int fd=open(cmd->errorOutputFile,O_WRONLY|O_CREAT,S_IRWXU);
+        if(fd==-1){
+            return -1;
+        }
+        dup2(fd,2);
+    }
     return 0;
 }
 

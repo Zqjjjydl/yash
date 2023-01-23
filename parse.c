@@ -7,6 +7,7 @@ command* parse(char** tokenList, int begin, int end){
     command* ret=(command*)malloc(sizeof(command));
     ret->inputFile=NULL;
     ret->outputFile=NULL;
+    ret->errorOutputFile=NULL;
     ret->cmd=tokenList[begin];
     ret->arg=(char**)malloc(2010*sizeof(char*));
     int argCnt=0;
@@ -16,6 +17,9 @@ command* parse(char** tokenList, int begin, int end){
         }
         else if(strcmp(tokenList[i],">")==0){
             ret->outputFile=tokenList[++i];
+        }
+        else if(strcmp(tokenList[i],"2>")==0){
+            ret->errorOutputFile=tokenList[++i];
         }
         else{
             ret->arg[argCnt++]=tokenList[i];
