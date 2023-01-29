@@ -36,7 +36,9 @@ void checkChild(int sig){
             curP->next->s=Done;
             printJob(curP->next);
             //delete curP->next
+            job* temp=curP->next;
             curP->next=curP->next->next;
+            deleteJob(temp);
         }
         curP=curP->next;
     }
