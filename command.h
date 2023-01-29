@@ -6,6 +6,8 @@ typedef struct{
     char* inputFile;//input redirection file name, NULL if none
     char* outputFile;//output redirection file name, NULL if none
     char* errorOutputFile;//error msg output redirection file name, NULL if none
+    int isBackground;
 } command;
 void deleteCmd(command* cmd);
+command* newCmd();
 #endif

@@ -2,14 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "job.h"
+
 command* parse(char** tokenList, int begin, int end){
     //parse argument into a command
-    command* ret=(command*)malloc(sizeof(command));
-    ret->inputFile=NULL;
-    ret->outputFile=NULL;
-    ret->errorOutputFile=NULL;
+    command* ret=newCmd();
     ret->cmd=tokenList[begin];
-    ret->arg=(char**)malloc(2010*sizeof(char*));
     int argCnt=0;
     for(int i=begin;i<end;i++){
         if(strcmp(tokenList[i],"<")==0){
@@ -20,6 +18,9 @@ command* parse(char** tokenList, int begin, int end){
         }
         else if(strcmp(tokenList[i],"2>")==0){
             ret->errorOutputFile=tokenList[++i];
+        }
+        else if((i==(end-1))&&(strcmp(tokenList[i],"&")==0)){
+            ret->isBackground=1;
         }
         else{
             ret->arg[argCnt++]=tokenList[i];
@@ -32,4 +33,13 @@ command* parse(char** tokenList, int begin, int end){
 void deleteCmd(command* cmd){
     free(cmd->arg);
     free(cmd);
+}
+command* newCmd(){
+    command* ret=(command*)malloc(sizeof(command));
+    ret->cmd=NULL;
+    ret->arg=(char**)malloc(2010*sizeof(char*));
+    ret->inputFile=NULL;
+    ret->outputFile=NULL;
+    ret->errorOutputFile=NULL;
+    ret->isBackground=0;
 }
