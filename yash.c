@@ -13,6 +13,8 @@
 #include <signal.h>
 #include "job.h"
 #include <time.h>
+#include <sys/prctl.h>
+
 
 job* dummyJobListHead;
 int nextJobId=0;
@@ -23,16 +25,23 @@ void checkChild(int sig){
     int status=0;
     job* curP=dummyJobListHead;
     while(curP&&curP->next){
-        waitpid(curP->next->pgid,&status,WUNTRACED|WNOHANG);
+        if(waitpid(-curP->next->pgid,&status,WUNTRACED|WNOHANG)==0){
+            curP=curP->next;
+            continue;
+        };
         if(WIFSTOPPED(status)){
             curP->next->s=Stopped;
         }
-        else if(WIFEXITED(status)){
+        else if(WIFEXITED(status)|WIFSIGNALED(status)){
+            curP->next->s=Done;
             printJob(curP->next);
             //delete curP->next
             curP->next=curP->next->next;
         }
         curP=curP->next;
+    }
+    if(dummyJobListHead->next){
+        dummyJobListHead->next->isMostRecentJob=1;
     }
 }
 
@@ -80,31 +89,56 @@ int continueJob(){
 }
 
 void addJob(char* jobString,int pgid,status s){
-    job* temp=newJob(nextJobId++, s, jobString, pgid);
+    job* temp=newJob(nextJobId++, s, jobString, pgid,1);
+    if(dummyJobListHead->next){
+        dummyJobListHead->next->isMostRecentJob=0;
+    }
     temp->next=dummyJobListHead->next;
     dummyJobListHead->next=temp;
 }
 
 void printJobs(){
-     job* cur=dummyJobListHead;
-    while(cur->next!=NULL){
-        printJob(cur->next);
+    //this function print all jobs in the job list
+    //note that we store job in a fifo style therefore
+    //we need to reverse the order when printing
+    int jobCnt=0;
+    job* cur=dummyJobListHead;
+    while(cur->next){
+        jobCnt++;
         cur=cur->next;
     }
+    for(int i=jobCnt;i>0;i--){
+        cur=dummyJobListHead;
+        int temp=i-1;
+        while(temp--){
+            cur=cur->next;
+        }
+        printJob(cur->next);
+    }
+}
+
+void sigPrint(int sig){
+    printf("sig %d received",sig);
 }
 
 int main(){
     char* buffer=NULL;
+    char originalBuffer[2010];
     char* tokenList[2010];
     int tokenCnt=0;
     //yash should ignore sigtstp
     signal(SIGTSTP, SIG_IGN);
     signal(SIGINT, SIG_IGN);
-    dummyJobListHead=newJob(nextJobId++,Running,"",0);
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
+    dummyJobListHead=newJob(nextJobId++,Running,"",0,0);
 
     signal(SIGCHLD, checkChild);//when receiving child stop or ter
     while(1){
         buffer=readline("# ");
+        if(buffer){
+            strncpy(originalBuffer,buffer,strlen(buffer)+1);
+        }
         if(buffer==NULL){//EOF
             exit(0);
         }
@@ -121,9 +155,10 @@ int main(){
             if(pgid==-1){
                 continue;//if no job found, ignore fg command
             }
-            //give terminal control, wait on it
+            //give terminal control, wait on it, get back terminal control
             tcsetpgrp(0,pgid);
             waitpid(-pgid,NULL,WUNTRACED);
+            tcsetpgrp(0, getpgid(0));
             continue;
         }
         else if(strcmp(buffer,"jobs")==0){
@@ -146,10 +181,15 @@ int main(){
         if(pipeIdx==-1){
             //for single command, fork, file redirection, exec
             command* cmd=parse(tokenList,0,tokenCnt);
+            int ppid_before_fork = getpid();
             int cpid=fork();
             
             if(cpid==0){
                 //child
+                int r = prctl(PR_SET_PDEATHSIG, SIGTERM);
+                if (r == -1) { perror(0); exit(1); }
+                if (getppid() != ppid_before_fork)
+                    exit(1);
                 //sleep to ensure that parent can store its information
                 struct timespec ts;
                 ts.tv_sec=0;
@@ -161,24 +201,28 @@ int main(){
                 }
                 signal(SIGTSTP, SIG_DFL);
                 signal(SIGINT, SIG_DFL);
-                setpgid(0,0); //set current process to a new pgid
+                signal(SIGTTIN, SIG_IGN);
+                signal(SIGTTOU, SIG_IGN);
+            
                 int ret=execvp(cmd->cmd,cmd->arg);
                 if(ret==-1){
                     exit(0);
                 }
             }
+            else{
+                setpgid(cpid,cpid); //set current process to a new pgid
+                tcsetpgrp(0,getpgid(cpid));
+            }
             int status=0;
             if(cmd->isBackground==0){//if frontground cmd, wait for it
-                waitpid(cpid,&status,WUNTRACED);//should wait for signal
+                waitpid(-getpgid(cpid),&status,WUNTRACED);//should wait for signal
             }
             else{//else add it as a background job
-                addJob(buffer,cpid,Running);
+                addJob(originalBuffer,getpgid(cpid),Running);
             }
             if(WIFSTOPPED(status)){//if stopped by signal, put it into joblist
-                addJob(buffer,cpid,Stopped);
+                addJob(originalBuffer,getpgid(cpid),Stopped);
             }
-            // kill(cpid,SIGCONT);
-            // printf("child continues");
             deleteCmd(cmd);
         }
         else{
@@ -189,8 +233,13 @@ int main(){
             if(pipe(pfd)==-1){
                 continue;
             }
+            int ppid_before_fork = getpid();
             int cpid1=fork();
             if(cpid1==0){//left child, write to pipe
+                int r = prctl(PR_SET_PDEATHSIG, SIGTERM);
+                if (r == -1) { perror(0); exit(1); }
+                if (getppid() != ppid_before_fork)
+                    exit(1);
                 //sleep to ensure that right sibling can find the group
                 struct timespec ts;
                 ts.tv_sec=0;
@@ -199,9 +248,11 @@ int main(){
                 if(fileRedirect(cmd1)==-1){
                     exit(0);
                 }
-                setpgid(0,0); //set current process to a new pgid
+                // setpgid(0,0); //set current process to a new pgid
                 signal(SIGTSTP, SIG_DFL);
                 signal(SIGINT, SIG_DFL);
+                signal(SIGTTIN, SIG_IGN);
+                signal(SIGTTOU, SIG_IGN);
                 dup2(pfd[1],1);
                 close(pfd[0]);
                 int ret=execvp(cmd1->cmd,cmd1->arg);
@@ -211,12 +262,18 @@ int main(){
             }
             int cpid2=fork();
             if(cpid2==0){//right child, read from pipe
+                int r = prctl(PR_SET_PDEATHSIG, SIGTERM);
+                if (r == -1) { perror(0); exit(1); }
+                if (getppid() != ppid_before_fork)
+                    exit(1);
                 if(fileRedirect(cmd2)==-1){
                     exit(0);
                 }
-                setpgid(0,cpid1);//set pgid to cpid1
+                // setpgid(0,cpid1);//set pgid to cpid1
                 signal(SIGTSTP, SIG_DFL);
                 signal(SIGINT, SIG_DFL);
+                signal(SIGTTIN, SIG_IGN);
+                signal(SIGTTOU, SIG_IGN);
                 dup2(pfd[0],0);
                 close(pfd[1]);
                 int ret=execvp(cmd2->cmd,cmd2->arg);
@@ -224,15 +281,30 @@ int main(){
                     exit(0);
                 }
             }
+            if(cpid1&&cpid2){
+                setpgid(cpid1,cpid1); //set left child to a new pgid
+                setpgid(cpid2,getpgid(cpid1)); //set right child to a new pgid same as left child
+                tcsetpgrp(0,getpgid(cpid1));
+            }
             close(pfd[0]);
             close(pfd[1]);
+
+            int status=0;
+
             if(cmd2->isBackground==0){
+                waitpid(-getpgid(cpid1),&status,WUNTRACED);//should wait for signal
                 waitpid(cpid2,NULL,WUNTRACED);//should wait for signal
+            }
+            else{//else add it as a background job
+                addJob(originalBuffer,getpgid(cpid1),Running);
+            }
+            if(WIFSTOPPED(status)){//if stopped by signal, put it into joblist
+                addJob(originalBuffer,getpgid(cpid1),Stopped);
             }
             deleteCmd(cmd1);
             deleteCmd(cmd2);
         }
-        
+        tcsetpgrp(0, getpgid(0));
         free(buffer);
         buffer=NULL;
         tokenCnt=0;

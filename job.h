@@ -7,11 +7,10 @@ typedef struct job{
     status s;
     char* jobString;
     int pgid;
-    // command* cmd1;
-    // command* cmd2;
+    int isMostRecentJob;
     struct job* next;
 } job;
 void deleteJob(job* j);
-job* newJob(int jobId, status s, char* jobString, int pgid);
+job* newJob(int jobId, status s, char* jobString, int pgid,int isMostRecentJob);
 void printJob(job* j);
 #endif
