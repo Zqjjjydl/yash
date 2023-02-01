@@ -14,6 +14,7 @@
 #include "job.h"
 #include <time.h>
 #include <sys/prctl.h>
+#include <errno.h>
 
 
 job* dummyJobListHead;
@@ -25,16 +26,23 @@ void checkChild(int sig){
     int status=0;
     job* curP=dummyJobListHead;
     while(curP&&curP->next){
-        if(waitpid(-curP->next->pgid,&status,WUNTRACED|WNOHANG)==0){
+        int ret=waitpid(-curP->next->pgid,&status,WNOHANG|WUNTRACED);
+        if(ret==0||ret==-1){
             curP=curP->next;
             continue;
-        };
+        }
         if(WIFSTOPPED(status)){
             curP->next->s=Stopped;
         }
-        else if(WIFEXITED(status)|WIFSIGNALED(status)){
+        else if(WIFEXITED(status)){
             curP->next->s=Done;
             printJob(curP->next);
+            //delete curP->next
+            job* temp=curP->next;
+            curP->next=curP->next->next;
+            deleteJob(temp);
+        }
+        else if(WIFSIGNALED(status) == 0){
             //delete curP->next
             job* temp=curP->next;
             curP->next=curP->next->next;
@@ -76,11 +84,16 @@ int fileRedirect(command* cmd){
     return 0;
 }
 
-int continueJob(){
+int continueJob(int isBg){
     //called by yash, continue a job, return the pgid or -1 if failed
     job* cur=dummyJobListHead;
     while(cur&&cur->next){
-        if((cur->next->s)==Stopped){
+        if((cur->next->s)==Stopped&&isBg==1){//bg only run stopped process
+            kill(-cur->next->pgid,SIGCONT);
+            cur->next->s=Running;
+            return cur->next->pgid;
+        }
+        if(isBg==0){//fg run any process
             kill(-cur->next->pgid,SIGCONT);
             cur->next->s=Running;
             return cur->next->pgid;
@@ -119,8 +132,31 @@ void printJobs(){
     }
 }
 
-void sigPrint(int sig){
-    printf("sig %d received",sig);
+void updateJob(int pgid,status s){
+    job* cur=dummyJobListHead;
+    while(cur&&cur->next){
+        if((cur->next->pgid)==pgid){
+            cur->next->s=s;
+            return;
+        }
+        cur=cur->next;
+    }
+}
+
+void removeJob(int pgid){
+    job* cur=dummyJobListHead;
+    while(cur&&cur->next){
+        if((cur->next->pgid)==pgid){
+            job* temp=cur->next;
+            cur->next=cur->next->next;
+            deleteJob(temp);
+        }
+        cur=cur->next;
+    }
+}
+
+void emptyHandler(int a){
+    return;
 }
 
 int main(){
@@ -135,8 +171,9 @@ int main(){
     signal(SIGTTOU, SIG_IGN);
     dummyJobListHead=newJob(nextJobId++,Running,"",0,0);
 
-    signal(SIGCHLD, checkChild);//when receiving child stop or ter
+    signal(SIGCHLD, emptyHandler);//when receiving child stop or ter
     while(1){
+        checkChild(0);
         buffer=readline("# ");
         if(buffer){
             strncpy(originalBuffer,buffer,strlen(buffer)+1);
@@ -149,17 +186,24 @@ int main(){
         }
 
         if(strcmp(buffer,"bg")==0){
-            continueJob();
+            continueJob(1);
             continue;
         }
         else if(strcmp(buffer,"fg")==0){
-            int pgid=continueJob();
+            int pgid=continueJob(0);
             if(pgid==-1){
                 continue;//if no job found, ignore fg command
             }
             //give terminal control, wait on it, get back terminal control
             tcsetpgrp(0,pgid);
-            waitpid(-pgid,NULL,WUNTRACED);
+            int status=0;
+            waitpid(-pgid,&status,WUNTRACED);
+            if(WIFSTOPPED(status)){
+                updateJob(pgid,Stopped);
+            }
+            else if(WIFSIGNALED(status)){
+                removeJob(pgid);
+            }
             tcsetpgrp(0, getpgid(0));
             continue;
         }
@@ -268,6 +312,11 @@ int main(){
                 if (r == -1) { perror(0); exit(1); }
                 if (getppid() != ppid_before_fork)
                     exit(1);
+                //sleep to ensure that right sibling can find the group
+                struct timespec ts;
+                ts.tv_sec=0;
+                ts.tv_nsec=1000000;
+                nanosleep(&ts,NULL);
                 if(fileRedirect(cmd2)==-1){
                     exit(0);
                 }
